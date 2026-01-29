@@ -9,34 +9,36 @@ const db = editJsonFile(`${__dirname}/expenses.json`, { autosave: true });
 const app = express();
 const TZ = "Asia/Kolkata";
 
-// YOUR SECRET KEY (Change this to whatever you want)
-const ADMIN_SECRET_CODE = "ADMIN-7788"; 
+// 🔑 SECURE ACCESS CODE (Now coming from .env)
+const ADMIN_SECRET_CODE = process.env.ADMIN_SECRET_CODE; 
 
 const userState = {};
 const getTodayDate = () => new Date().toLocaleDateString('en-IN');
 
-// --- 🛡️ SECURITY MIDDLEWARE (GATEKEEPER) ---
+// --- 🛡️ 1. SECURITY MIDDLEWARE (THE GATEKEEPER) ---
 bot.use(async (ctx, next) => {
+    if (!ctx.from || !ctx.chat) return; 
+
     const userId = ctx.from.id.toString();
     const userData = db.get(userId) || { authorized: false };
     const text = ctx.message?.text;
 
-    // 1. If user sends the Secret Code, authorize them
+    // A. Check if user is sending the Secret Code from .env
     if (text === ADMIN_SECRET_CODE) {
         db.set(`${userId}.authorized`, true);
-        return ctx.reply("✅ *ACCESS GRANTED*\n\nWelcome, Admin. The Elite Expense Protocol is now unlocked for you.", { parse_mode: 'Markdown' });
+        return ctx.reply("✅ *ACCESS GRANTED*\n\nIdentity verified. The Elite Expense Protocol is now unlocked for you.", { parse_mode: 'Markdown' });
     }
 
-    // 2. If user is already authorized, let them pass to the bot logic
-    if (userData.authorized) {
+    // B. If user is already authorized, let them pass
+    if (userData.authorized === true) {
         return next();
     }
 
-    // 3. If not authorized, block everything and ask for the code
-    return ctx.reply("🛡️ *SECURITY ALERT*\n━━━━━━━━━━━━━\nThis is a private Intelligence Bot. You are not authorized.\n\n*Please enter the Activation Code to proceed.*", { parse_mode: 'Markdown' });
+    // C. BLOCK EVERYTHING ELSE
+    return ctx.reply("🛡️ *SECURITY PROTOCOL ACTIVE*\n━━━━━━━━━━━━━━━━━━━━\nThis bot is private and encrypted.\n\n*Please enter the Activation Code to proceed.*", { parse_mode: 'Markdown' });
 });
 
-// --- 1. ELITE WELCOME ---
+// --- 2. ELITE WELCOME ---
 bot.start(async (ctx) => {
     const name = ctx.from.first_name || "Operative";
     await ctx.replyWithMarkdown(`👋 *Welcome back, ${name}!*`);
@@ -48,11 +50,19 @@ bot.start(async (ctx) => {
         `• /setlimit [amount] — Set budget\n` +
         `• /addbill — Save a receipt\n` +
         `• /bills — View stored bills\n` +
-        `• /clear — Wipe today's data`
+        `• /clear — Wipe today's data\n` +
+        `• /logout — Lock the bot again`
     );
 });
 
-// --- 2. BILL VAULT LOGIC ---
+// --- 3. LOGOUT COMMAND ---
+bot.command('logout', (ctx) => {
+    const userId = ctx.from.id.toString();
+    db.set(`${userId}.authorized`, false);
+    ctx.reply("🔒 *Logged Out.* Bot is now locked.");
+});
+
+// --- 4. BILL VAULT LOGIC ---
 bot.command('addbill', (ctx) => {
     userState[ctx.from.id] = { step: 'AWAITING_PHOTO' };
     ctx.reply("📸 Send the photo of your bill.");
@@ -78,7 +88,7 @@ bot.command('view', async (ctx) => {
     } else ctx.reply("❌ Not found.");
 });
 
-// --- 3. COMMANDS ---
+// --- 5. ANALYTICS ---
 bot.command('stats', (ctx) => {
     const userId = ctx.from.id.toString();
     const data = db.get(userId) || { logs: [] };
@@ -106,7 +116,7 @@ bot.command('clear', (ctx) => {
     ctx.reply("🗑️ Today's data wiped.");
 });
 
-// --- 4. SMART LOGGING & STATE HANDLER ---
+// --- 6. LOGGING & STATE HANDLER ---
 bot.on(['photo', 'text'], async (ctx) => {
     const userId = ctx.from.id;
     const state = userState[userId];
@@ -136,7 +146,7 @@ bot.on(['photo', 'text'], async (ctx) => {
     }
 });
 
-// --- 5. AUTOMATED REPORTS (CRON) ---
+// --- 7. AUTOMATED REPORTS ---
 cron.schedule('0 21 * * *', () => {
     const all = db.toObject();
     const today = getTodayDate();
@@ -152,6 +162,7 @@ cron.schedule('0 21 * * *', () => {
     });
 }, { timezone: TZ });
 
-app.get('/', (req, res) => res.send('Bot Security Active'));
+// --- 8. SERVER ---
+app.get('/', (req, res) => res.send('Security Active'));
 app.listen(process.env.PORT || 3000);
 bot.launch();
