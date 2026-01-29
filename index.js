@@ -9,11 +9,24 @@ const db = editJsonFile(`${__dirname}/expenses.json`, { autosave: true });
 const app = express();
 const TZ = "Asia/Kolkata";
 
-// 🔑 SECURE ACCESS CODE (Now coming from .env)
 const ADMIN_SECRET_CODE = process.env.ADMIN_SECRET_CODE; 
-
 const userState = {};
 const getTodayDate = () => new Date().toLocaleDateString('en-IN');
+
+// --- HELPER: SYSTEM MANUAL ---
+const sendManual = async (ctx) => {
+    return ctx.replyWithMarkdown(
+        `🛠 *System Manual*\n━━━━━━━━━━━━━\n\n` +
+        `💰 *Logging:* \`[Amount] [Item]\`\n` +
+        `📑 *Commands:*\n` +
+        `• /stats — Today's briefing\n` +
+        `• /setlimit [amount] — Set budget\n` +
+        `• /addbill — Save a receipt\n` +
+        `• /bills — View stored bills\n` +
+        `• /clear — Wipe today's data\n` +
+        `• /logout — Lock the bot again`
+    );
+};
 
 // --- 🛡️ 1. SECURITY MIDDLEWARE (THE GATEKEEPER) ---
 bot.use(async (ctx, next) => {
@@ -23,13 +36,14 @@ bot.use(async (ctx, next) => {
     const userData = db.get(userId) || { authorized: false };
     const text = ctx.message?.text;
 
-    // A. Check if user is sending the Secret Code from .env
+    // A. Check for Secret Code
     if (text === ADMIN_SECRET_CODE) {
         db.set(`${userId}.authorized`, true);
-        return ctx.reply("✅ *ACCESS GRANTED*\n\nIdentity verified. The Elite Expense Protocol is now unlocked for you.", { parse_mode: 'Markdown' });
+        await ctx.reply("✅ *ACCESS GRANTED*\n\nIdentity verified. The Elite Expense Protocol is now unlocked.", { parse_mode: 'Markdown' });
+        return sendManual(ctx); // Send manual immediately upon activation
     }
 
-    // B. If user is already authorized, let them pass
+    // B. If authorized, let them pass
     if (userData.authorized === true) {
         return next();
     }
@@ -42,17 +56,7 @@ bot.use(async (ctx, next) => {
 bot.start(async (ctx) => {
     const name = ctx.from.first_name || "Operative";
     await ctx.replyWithMarkdown(`👋 *Welcome back, ${name}!*`);
-    await ctx.replyWithMarkdown(
-        `🛠 *System Manual*\n━━━━━━━━━━━━━\n\n` +
-        `💰 *Logging:* \`[Amount] [Item]\`\n` +
-        `📑 *Commands:*\n` +
-        `• /stats — Today's briefing\n` +
-        `• /setlimit [amount] — Set budget\n` +
-        `• /addbill — Save a receipt\n` +
-        `• /bills — View stored bills\n` +
-        `• /clear — Wipe today's data\n` +
-        `• /logout — Lock the bot again`
-    );
+    await sendManual(ctx);
 });
 
 // --- 3. LOGOUT COMMAND ---
@@ -142,6 +146,11 @@ bot.on(['photo', 'text'], async (ctx) => {
             data.logs.push({ amount, item: itemArr.join(' ') || "Misc", date: getTodayDate(), month: new Date().getMonth() });
             db.set(userId.toString(), data);
             await ctx.reply(`✅ Logged: ₹${amount}`);
+
+            const todayTotal = data.logs.filter(l => l.date === getTodayDate()).reduce((s, l) => s + l.amount, 0);
+            if (data.dailyLimit > 0 && todayTotal >= data.dailyLimit) {
+                ctx.reply(`🚨 *LIMIT EXCEEDED:* ₹${todayTotal}`, { parse_mode: 'Markdown' });
+            }
         }
     }
 });
