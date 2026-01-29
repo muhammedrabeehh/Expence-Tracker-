@@ -9,16 +9,37 @@ const db = editJsonFile(`${__dirname}/expenses.json`, { autosave: true });
 const app = express();
 const TZ = "Asia/Kolkata";
 
-// State Tracker for /addbill
-const userState = {};
+// YOUR SECRET KEY (Change this to whatever you want)
+const ADMIN_SECRET_CODE = "ADMIN-7788"; 
 
-// Helper: Get Current Date
+const userState = {};
 const getTodayDate = () => new Date().toLocaleDateString('en-IN');
+
+// --- 🛡️ SECURITY MIDDLEWARE (GATEKEEPER) ---
+bot.use(async (ctx, next) => {
+    const userId = ctx.from.id.toString();
+    const userData = db.get(userId) || { authorized: false };
+    const text = ctx.message?.text;
+
+    // 1. If user sends the Secret Code, authorize them
+    if (text === ADMIN_SECRET_CODE) {
+        db.set(`${userId}.authorized`, true);
+        return ctx.reply("✅ *ACCESS GRANTED*\n\nWelcome, Admin. The Elite Expense Protocol is now unlocked for you.", { parse_mode: 'Markdown' });
+    }
+
+    // 2. If user is already authorized, let them pass to the bot logic
+    if (userData.authorized) {
+        return next();
+    }
+
+    // 3. If not authorized, block everything and ask for the code
+    return ctx.reply("🛡️ *SECURITY ALERT*\n━━━━━━━━━━━━━\nThis is a private Intelligence Bot. You are not authorized.\n\n*Please enter the Activation Code to proceed.*", { parse_mode: 'Markdown' });
+});
 
 // --- 1. ELITE WELCOME ---
 bot.start(async (ctx) => {
     const name = ctx.from.first_name || "Operative";
-    await ctx.replyWithMarkdown(`👋 *Welcome to the Protocol, ${name}!*\n\nI am your **Elite Expense Intelligence** assistant. ⚔️`);
+    await ctx.replyWithMarkdown(`👋 *Welcome back, ${name}!*`);
     await ctx.replyWithMarkdown(
         `🛠 *System Manual*\n━━━━━━━━━━━━━\n\n` +
         `💰 *Logging:* \`[Amount] [Item]\`\n` +
@@ -32,7 +53,6 @@ bot.start(async (ctx) => {
 });
 
 // --- 2. BILL VAULT LOGIC ---
-
 bot.command('addbill', (ctx) => {
     userState[ctx.from.id] = { step: 'AWAITING_PHOTO' };
     ctx.reply("📸 Send the photo of your bill.");
@@ -41,7 +61,6 @@ bot.command('addbill', (ctx) => {
 bot.command('bills', (ctx) => {
     const data = db.get(ctx.from.id.toString()) || { vault: [] };
     if (!data.vault || data.vault.length === 0) return ctx.reply("📂 Your vault is empty.");
-
     let msg = `📂 *Stored Bills*\n━━━━━━━━━━━━━\n\n`;
     data.vault.forEach((b, i) => msg += `${i + 1}. ${b.label} (${b.date})\n`);
     msg += `\n*View one:* \`/view [number]\``;
@@ -60,16 +79,13 @@ bot.command('view', async (ctx) => {
 });
 
 // --- 3. COMMANDS ---
-
 bot.command('stats', (ctx) => {
     const userId = ctx.from.id.toString();
     const data = db.get(userId) || { logs: [] };
     const today = getTodayDate();
     const todayLogs = data.logs.filter(l => l.date === today);
     const total = todayLogs.reduce((s, l) => s + l.amount, 0);
-
     if (todayLogs.length === 0) return ctx.replyWithMarkdown(`📊 *Briefing for ${today}*\n\nNo records.`);
-    
     let msg = `📊 *Briefing for ${today}*\n━━━━━━━━━━━━━\n\n`;
     todayLogs.forEach(l => msg += `• ${l.item}: ₹${l.amount}\n`);
     msg += `\n💰 *Total: ₹${total}*`;
@@ -91,12 +107,9 @@ bot.command('clear', (ctx) => {
 });
 
 // --- 4. SMART LOGGING & STATE HANDLER ---
-
 bot.on(['photo', 'text'], async (ctx) => {
     const userId = ctx.from.id;
     const state = userState[userId];
-
-    // Bill Processing State Machine
     if (state) {
         if (state.step === 'AWAITING_PHOTO' && ctx.message.photo) {
             state.fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
@@ -105,81 +118,40 @@ bot.on(['photo', 'text'], async (ctx) => {
         }
         if (state.step === 'AWAITING_LABEL' && ctx.message.text) {
             const data = db.get(userId.toString()) || { vault: [] };
-            if (!data.vault) data.vault = [];
             data.vault.push({ label: ctx.message.text, fileId: state.fileId, date: getTodayDate() });
             db.set(userId.toString(), data);
             delete userState[userId];
             return ctx.reply("✅ Bill Saved!");
         }
     }
-
-    // Standard Expense Logging
     if (ctx.message.text && !ctx.message.text.startsWith('/')) {
         const [amountStr, ...itemArr] = ctx.message.text.split(' ');
         const amount = parseFloat(amountStr);
         if (!isNaN(amount)) {
             const data = db.get(userId.toString()) || { logs: [], dailyLimit: 0 };
-            const today = getTodayDate();
-            data.logs.push({ amount, item: itemArr.join(' ') || "Misc", date: today, month: new Date().getMonth() });
+            data.logs.push({ amount, item: itemArr.join(' ') || "Misc", date: getTodayDate(), month: new Date().getMonth() });
             db.set(userId.toString(), data);
             await ctx.reply(`✅ Logged: ₹${amount}`);
-
-            const todayTotal = data.logs.filter(l => l.date === today).reduce((s, l) => s + l.amount, 0);
-            if (data.dailyLimit > 0) {
-                if (todayTotal >= data.dailyLimit) ctx.reply(`🚨 *LIMIT EXCEEDED:* ₹${todayTotal}`, { parse_mode: 'Markdown' });
-                else if (todayTotal >= data.dailyLimit * 0.8) ctx.reply(`⚠️ *80% BUDGET USED*`, { parse_mode: 'Markdown' });
-            }
         }
     }
 });
 
-// --- 5. AUTOMATED REPORTS ---
-
-// Daily 9 PM
+// --- 5. AUTOMATED REPORTS (CRON) ---
 cron.schedule('0 21 * * *', () => {
     const all = db.toObject();
     const today = getTodayDate();
     Object.keys(all).forEach(id => {
-        const logs = all[id].logs.filter(l => l.date === today);
-        if (logs.length > 0) {
-            let msg = `🌙 *Daily Report*\n\n` + logs.map(l => `• ${l.item}: ₹${l.amount}`).join('\n');
-            msg += `\n\n💰 *Total: ₹${logs.reduce((s,l)=>s+l.amount,0)}*`;
-            bot.telegram.sendMessage(id, msg, { parse_mode: 'Markdown' });
-        }
-    });
-}, { timezone: TZ });
-
-// Weekly Sunday 9 PM
-cron.schedule('0 21 * * 7', () => {
-    const all = db.toObject();
-    Object.keys(all).forEach(id => {
-        const logs = all[id].logs.slice(-30);
-        if (logs.length > 0) {
-            let msg = `📊 *Weekly Audit*\n━━━━━━━━━━━━━\n\n`;
-            const grp = {};
-            logs.forEach(l => { if(!grp[l.date]) grp[l.date]=[]; grp[l.date].push(l); });
-            for(let d in grp) msg += `📅 *${d}*\n` + grp[d].map(i => `  • ${i.item}: ₹${i.amount}`).join('\n') + `\n\n`;
-            bot.telegram.sendMessage(id, msg, { parse_mode: 'Markdown' });
-        }
-    });
-}, { timezone: TZ });
-
-// Monthly (Enhanced)
-cron.schedule('0 21 28-31 * *', () => {
-    const today = new Date();
-    const tom = new Date(today); tom.setDate(today.getDate()+1);
-    if (tom.getDate() === 1) {
-        const all = db.toObject();
-        Object.keys(all).forEach(id => {
-            const mLogs = all[id].logs.filter(l => l.month === today.getMonth());
-            if (mLogs.length > 0) {
-                const total = mLogs.reduce((s,l)=>s+l.amount,0);
-                bot.telegram.sendMessage(id, `🗓️ *Monthly Intel*\nTotal spent: *₹${total}*\nCheck /bills for receipts.`, { parse_mode: 'Markdown' });
+        if (all[id].authorized) {
+            const logs = all[id].logs?.filter(l => l.date === today) || [];
+            if (logs.length > 0) {
+                let msg = `🌙 *Daily Report*\n\n` + logs.map(l => `• ${l.item}: ₹${l.amount}`).join('\n');
+                msg += `\n\n💰 *Total: ₹${logs.reduce((s,l)=>s+l.amount,0)}*`;
+                bot.telegram.sendMessage(id, msg, { parse_mode: 'Markdown' });
             }
-        });
-    }
+        }
+    });
 }, { timezone: TZ });
 
-app.get('/', (req, res) => res.send('Active'));
+app.get('/', (req, res) => res.send('Bot Security Active'));
 app.listen(process.env.PORT || 3000);
 bot.launch();
